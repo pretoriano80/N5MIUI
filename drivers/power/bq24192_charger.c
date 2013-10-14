@@ -649,7 +649,10 @@ static int bq24192_enable_chg_term(struct bq24192_chip *chip, bool enable)
 	int ret;
 	u8 val = (u8)(!!enable << EN_CHG_TERM_SHIFT);
 
+<<<<<<< HEAD
 	pr_debug("%s termination\n", enable? "enable":"disable");
+=======
+>>>>>>> d697a04... power: bq24192: add extra 10 min charging in case of early EOC
 	ret = bq24192_masked_write(chip->client, CHARGE_TERM_TIMER_CONT_REG,
 			EN_CHG_TERM_MASK, val);
 	if (ret) {
