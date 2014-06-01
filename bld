@@ -1,0 +1,43 @@
+#!/bin/bash
+
+echo "Setting Environment....."
+export ARCH=arm
+export SUBARCH=arm
+export CROSS_COMPILE=/home/ardi/linaro474/bin/arm-cortex_a15-linux-gnueabihf-
+echo "Cleaning previous built....."
+# make -j4 mrproper
+if [ -e boot.img ]; then
+rm boot.img
+fi;
+
+if [ -e zImage-dtb ]; then
+rm zImage-dtb
+fi;
+
+if [ -e ramdisk.cpio.gz ]; then
+rm ramdisk.cpio.gz
+fi;
+
+if [ -e arch/arm/boot/zImage-dtb ]; then
+rm arch/arm/boot/zImage-dtb
+fi;
+
+echo "Building configuration....."
+make -j4 hammerhead_defconfig
+echo "Building zImage....."
+make -j4
+
+if [ -e arch/arm/boot/zImage-dtb ]; then
+cp arch/arm/boot/zImage-dtb .
+cd ramdisk
+find . | cpio -o -H newc | gzip > ../ramdisk.cpio.gz
+cd ..
+
+if [ -e ramdisk.cpio.gz ]; then
+echo "Building boot.img....."
+./mkbootimg --base 0 --pagesize 2048 --kernel_offset 0x00008000 --ramdisk_offset 0x02900000 --second_offset 0x00f00000 --tags_offset 0x02700000 --cmdline 'console=ttyHSL0,115200,n8 androidboot.hardware=hammerhead user_debug=31 maxcpus=2 msm_watchdog_v2.enable=1' --kernel zImage-dtb --ramdisk ramdisk.cpio.gz -o boot.img
+echo "Ready to flash....."
+fi;
+
+fi;
+
