@@ -31,6 +31,11 @@
 #include <linux/of_gpio.h>
 #include <linux/qpnp/qpnp-adc.h>
 
+#ifdef CONFIG_FORCE_FAST_CHARGE
+#include <linux/fastchg.h>
+#define USB_FASTCHG_LOAD 900 /* uA */
+#endif
+
 /* Register definitions */
 #define INPUT_SRC_CONT_REG              0X00
 #define PWR_ON_CONF_REG                 0X01
@@ -70,12 +75,6 @@
 #define IR_COMP_VCLAMP_MASK        0x1C
 #define THERM_REG_MASK             0x03
 #define BOOST_LIM_MASK             0x01
-#define VRECHG_MASK                0x01
-
-enum rechg_thres{
-	VRECHG_100MV = 0,
-	VRECHG_300MV,
-};
 
 struct bq24192_chip {
 	int  chg_current_ma;
@@ -169,7 +168,7 @@ static struct current_limit_entry adap_tbl[] = {
 
 static int bq24192_step_down_detect_disable(struct bq24192_chip *chip);
 static int bq24192_get_soc_from_batt_psy(struct bq24192_chip *chip);
-static int bq24192_trigger_recharge(struct bq24192_chip *chip);
+static void bq24192_trigger_recharge(struct bq24192_chip *chip);
 
 static int bq24192_read_reg(struct i2c_client *client, int reg, u8 *val)
 {
@@ -345,7 +344,7 @@ static int bq24192_set_input_i_limit(struct bq24192_chip *chip, int ma)
 		chip->saved_input_i_ma = ma;
 
 	chip->therm_mitigation = false;
-	pr_debug("input current limit = %d setting 0x%02x\n", ma, temp);
+	pr_info("input current limit = %d setting 0x%02x\n", ma, temp);
 	return bq24192_masked_write(chip->client, INPUT_SRC_CONT_REG,
 			INPUT_CURRENT_LIMIT_MASK, temp);
 }
@@ -511,15 +510,7 @@ static int bq24192_set_vbat_max(struct bq24192_chip *chip, int mv)
 				mv, set_vbat, reg_val);
 
 	return bq24192_masked_write(chip->client, CHARGE_VOLT_CONT_REG,
-			CHG_VOLTAGE_LIMIT_MASK|VRECHG_MASK, reg_val);
-}
-
-static int bq24192_set_rechg_voltage(struct bq24192_chip *chip,
-					enum rechg_thres val)
-{
-	pr_debug("%s\n", val? "300mV":"100mv");
-	return bq24192_masked_write(chip->client, CHARGE_VOLT_CONT_REG,
-				VRECHG_MASK, (u8)val);
+			CHG_VOLTAGE_LIMIT_MASK, reg_val);
 }
 
 #define SYSTEM_VMIN_LOW_MV  3000
@@ -649,10 +640,6 @@ static int bq24192_enable_chg_term(struct bq24192_chip *chip, bool enable)
 	int ret;
 	u8 val = (u8)(!!enable << EN_CHG_TERM_SHIFT);
 
-<<<<<<< HEAD
-	pr_debug("%s termination\n", enable? "enable":"disable");
-=======
->>>>>>> d697a04... power: bq24192: add extra 10 min charging in case of early EOC
 	ret = bq24192_masked_write(chip->client, CHARGE_TERM_TIMER_CONT_REG,
 			EN_CHG_TERM_MASK, val);
 	if (ret) {
@@ -705,8 +692,6 @@ static void bq24192_irq_worker(struct work_struct *work)
 			schedule_delayed_work(&chip->extra_chg_work,
 					msecs_to_jiffies(EXTRA_CHG_TIME_MS));
 		} else {
-			if (chip->batt_health != POWER_SUPPLY_HEALTH_OVERHEAT)
-				bq24192_set_rechg_voltage(chip, VRECHG_300MV);
 			power_supply_changed(&chip->ac_psy);
 			pr_info("charge done!!\n");
 		}
@@ -969,20 +954,17 @@ static bool bq24192_is_chg_done(struct bq24192_chip *chip)
 	return (temp & CHG_DONE_MASK) == CHG_DONE_MASK;
 }
 
-static int bq24192_trigger_recharge(struct bq24192_chip *chip)
+static void bq24192_trigger_recharge(struct bq24192_chip *chip)
 {
 
 	if (chip->batt_health != POWER_SUPPLY_HEALTH_GOOD)
-		return false;
+		return;
 
 	if (!bq24192_is_chg_done(chip))
-		return false;
+		return;
 
 	bq24192_enable_hiz(chip, true);
 	bq24192_enable_hiz(chip, false);
-	pr_debug("trigger recharge\n");
-
-	return true;
 }
 
 #define WLC_BOUNCE_INTERVAL_MS 15000
@@ -1041,10 +1023,27 @@ static void bq24192_external_power_changed(struct power_supply *psy)
 		chip->usb_psy->get_property(chip->usb_psy,
 				  POWER_SUPPLY_PROP_CURRENT_MAX, &ret);
 		bq24192_set_input_vin_limit(chip, chip->vin_limit_mv);
+
+#ifdef CONFIG_FORCE_FAST_CHARGE
+		if (force_fast_charge)
+			bq24192_set_input_i_limit(chip, USB_FASTCHG_LOAD);
+		else
+			bq24192_set_input_i_limit(chip, ret.intval / 1000);
+#else
 		bq24192_set_input_i_limit(chip, ret.intval / 1000);
+#endif
 		bq24192_set_ibat_max(chip, USB_MAX_IBAT_MA);
+#ifdef CONFIG_FORCE_FAST_CHARGE
+		if (force_fast_charge)
+			pr_info("usb is online and fast charge enabled! i_limit = %d v_limit = %d\n",
+					USB_FASTCHG_LOAD, chip->vin_limit_mv);
+		else
+			pr_info("usb is online! i_limit = %d v_limit = %d\n",
+					ret.intval / 1000, chip->vin_limit_mv);
+#else
 		pr_info("usb is online! i_limit = %d v_limit = %d\n",
 				ret.intval / 1000, chip->vin_limit_mv);
+#endif
 	} else if (chip->ac_online &&
 			bq24192_is_charger_present(chip)) {
 		chip->icl_first = true;
@@ -1336,8 +1335,8 @@ static int bq24192_power_set_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
 		bq24192_enable_charging(chip, val->intval);
-		if (val->intval && bq24192_trigger_recharge(chip))
-			return 0;
+		if (val->intval)
+			bq24192_trigger_recharge(chip);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		bq24192_set_vbat_max(chip, val->intval / 1000);
