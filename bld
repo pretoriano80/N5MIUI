@@ -5,7 +5,7 @@ export ARCH=arm
 export SUBARCH=arm
 export CROSS_COMPILE=/home/ardi/linaro474/bin/arm-cortex_a15-linux-gnueabihf-
 echo "Cleaning previous built....."
-make -j4 mrproper
+#make -j4 mrproper
 if [ -e boot.img ]; then
 rm boot.img
 fi;
